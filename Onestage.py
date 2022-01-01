@@ -11,7 +11,7 @@ import torch
 import torch.nn.functional as F
 from torch.optim import SGD, Adam, lr_scheduler
 
-from models.cifar10.resnet import ResNet34
+from models.cifar10.resnet_os import ResNet34OAT
 from models.svhn.wide_resnet import WRN16_8
 from models.stl10.wide_resnet import WRN40_2
 from models.cifar10.RNet import ResNet50
@@ -25,14 +25,14 @@ from utils.context import ctx_noparamgrad_and_eval
 from attacks.pgd import PGD
 
 parser = argparse.ArgumentParser(description='CIFAR10 Training against DDN Attack')
-parser.add_argument('--gpu', default='1')
+parser.add_argument('--gpu', default='0')
 parser.add_argument('--cpus', default=4)
 # dataset:
 parser.add_argument('--dataset', '--ds', default='cifar10', choices=['cifar10', 'svhn', 'stl10'], help='which dataset to use')
 # optimization parameters:
 parser.add_argument('--batch_size', '-b', default=128, type=int, help='mini-batch size')
-parser.add_argument('--epochs', '-e', default=210, type=int, help='number of total epochs to run')
-parser.add_argument('--decay_epochs', '--de', default=[50,150], nargs='+', type=int, help='milestones for multisteps lr decay')
+parser.add_argument('--epochs', '-e', default=330, type=int, help='number of total epochs to run')
+parser.add_argument('--decay_epochs', '--de', default=[50,200], nargs='+', type=int, help='milestones for multisteps lr decay')
 parser.add_argument('--opt', default='sgd', choices=['sgd', 'adam'], help='which optimizer to use')
 parser.add_argument('--decay', default='cos', choices=['cos', 'multisteps'], help='which lr decay method to use')
 parser.add_argument('--lr', default=0.1, type=float, help='initial learning rate')
@@ -62,7 +62,7 @@ elif args.dataset == 'stl10':
 
 # model:
 if args.dataset == 'cifar10':
-    model_fn = ResNet34
+    model_fn = ResNet34OAT
     #model_fn = ResNet50
     #model_fn = ResNet18
 elif args.dataset == 'svhn':
@@ -84,7 +84,7 @@ elif args.decay == 'multisteps':
     decay_str = 'multisteps-%s' % args.decay_epochs
 attack_str = 'targeted' if args.targeted else 'untargeted' + '-pgd-%d-%d' % (args.eps, args.steps)
 loss_str = 'lambda%s' % (args.Lambda)
-save_folder = os.path.join('./PGDAT', args.dataset, model_str, '%s_%s_%s_%s' % (attack_str, opt_str, decay_str, loss_str))
+save_folder = os.path.join('./OneStage', args.dataset, model_str, '%s_%s_%s_%s' % (attack_str, opt_str, decay_str, loss_str))
 print(save_folder)
 create_dir(save_folder)
 
@@ -100,7 +100,6 @@ elif args.decay == 'multisteps':
 
 # attacker:
 attacker = PGD(eps=args.eps/255, steps=args.steps)
-attacker2 = PGD(eps=(args.eps+6)/255, steps=args.steps)
 
 # load ckpt:
 if args.resume:
@@ -114,31 +113,33 @@ else:
     training_loss, val_TA, val_ATA , val_ATA2 = [], [], [], []
 
 ## training:
+#pdb.set_trace()
 for epoch in range(start_epoch, args.epochs):
     fp = open(os.path.join(save_folder, 'val_log.txt'), 'a+')
     start_time = time.time()
     ## training:
     model.train()
     requires_grad_(model, True)
-    accs, accs_adv1, accs_adv2, losses = AverageMeter(), AverageMeter(), AverageMeter(), AverageMeter()
+    accs, accs_adv1, accs_adv2, losses, losses_advdetect, losses_classfinal = AverageMeter(), AverageMeter(), AverageMeter(), AverageMeter(), AverageMeter(), AverageMeter()
+    accs_detect_normal, accs_detect_adv = AverageMeter(), AverageMeter()
     for i, (imgs, labels) in enumerate(train_loader):
         imgs, labels = imgs.cuda(), labels.cuda()
-
+        normal_label = torch.zeros(args.batch_size).cuda()
+        adv_label = torch.ones(args.batch_size).cuda()
+        #pdb.set_trace()
         # generate adversarial images:
         if args.Lambda != 0:
             with ctx_noparamgrad_and_eval(model):
-                imgs_adv1 = attacker.attack(model, imgs, labels)
+                imgs_adv1 = attacker.attackos(model, imgs, labels)
                 #imgs_adv2 = attacker2.attack(model, imgs, labels)
-            logits_adv1 = model(imgs_adv1.detach())
+            logits_adv1,da_ = model(imgs_adv1.detach())
             #logits_adv2 = model(imgs_adv2.detach())
         # logits for clean imgs:
-        logits = model(imgs)
+        logits, dn_ = model(imgs)
 
         # loss and update:
-        loss = F.cross_entropy(logits, labels)
-        if args.Lambda != 0:
-            loss = loss + F.cross_entropy(logits_adv1, labels) 
-            #+ F.cross_entropy(logits_adv2, labels)
+        loss = F.cross_entropy(logits, labels) + F.cross_entropy(logits_adv1, labels) + F.cross_entropy(dn_, normal_label.long()) + F.cross_entropy(da_, adv_label.long())
+
         optimizer.zero_grad()
         loss.backward()
         optimizer.step()
@@ -150,18 +151,23 @@ for epoch in range(start_epoch, args.epochs):
         accs.append((logits.argmax(1) == labels).float().mean().item())
         if args.Lambda != 0:
             accs_adv1.append((logits_adv1.argmax(1) == labels).float().mean().item())
+            accs_detect_normal.append((dn_.argmax(1) == 0).float().mean().item())
+            accs_detect_adv.append((da_.argmax(1) == 1).float().mean().item())
             #accs_adv2.append((logits_adv2.argmax(1) == labels).float().mean().item())
         losses.append(loss.item())
+        losses_advdetect.append((F.cross_entropy(dn_, normal_label.long()) + F.cross_entropy(da_, adv_label.long())).item())
+        losses_classfinal.append((F.cross_entropy(logits, labels) + F.cross_entropy(logits_adv1, labels)).item())
 
         if i % 50 == 0:
-            train_str = 'Epoch %d-%d | Train | Loss: %.4f, SA: %.4f' % (epoch, i, losses.avg, accs.avg)
+            train_str = 'Epoch %d-%d | Train | Loss: %.4f, Loss_advdetect: %.4f, Loss_class: %.4f, SA: %.4f' % (epoch, i, losses.avg, losses_advdetect.avg, losses_classfinal.avg ,accs.avg)
             if args.Lambda != 0:
                 train_str += ', RA1: %.4f' % (accs_adv1.avg)
                 #train_str += ', RA2: %.4f' % (accs_adv2.avg)
             print(train_str)
+            adv_acc_str = 'adv image acc: %.4f, normal image add: %.4f'%(accs_detect_normal.avg,accs_detect_adv.avg)
+            print(adv_acc_str)
     # lr schedualr update at the end of each epoch:
     scheduler.step()
-
 
     ## validation:
     model.eval()
@@ -180,13 +186,13 @@ for epoch in range(start_epoch, args.epochs):
 
             # generate adversarial images:
             with ctx_noparamgrad_and_eval(model):
-                imgs_adv = attacker.attack(model, imgs, labels)
+                imgs_adv = attacker.attackos(model, imgs, labels)
                 #imgs_adv2 = attacker2.attack(model, imgs, labels)
             linf_norms = (imgs_adv - imgs).view(imgs.size()[0], -1).norm(p=np.Inf, dim=1)
-            logits_adv1 = model(imgs_adv.detach())
+            logits_adv1,da_ = model(imgs_adv.detach())
             #logits_adv2 = model(imgs_adv2.detach())
             # logits for clean imgs:
-            logits = model(imgs)
+            logits,dn_ = model(imgs)
             #pdb.set_trace()
             val_accs.append((logits.argmax(1) == labels).float().mean().item())
             val_accs_adv.append((logits_adv1.argmax(1) == labels).float().mean().item())
@@ -236,5 +242,4 @@ for epoch in range(start_epoch, args.epochs):
             torch.save(model.state_dict(), os.path.join(save_folder, 'best_RA.pth'))
     save_ckpt(epoch, model, optimizer, scheduler, best_TA, best_ATA, training_loss, val_TA, val_ATA, 
         os.path.join(save_folder, 'latest.pth'))
-
 

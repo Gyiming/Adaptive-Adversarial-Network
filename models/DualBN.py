@@ -1,6 +1,7 @@
 import torch
 import torch.nn as nn
 from models.slimmable_ops import width_mult_list, SlimmableBatchNorm2d
+import pdb
 
 class DualBN2d(nn.Module):
     '''
@@ -14,6 +15,7 @@ class DualBN2d(nn.Module):
         super(DualBN2d, self).__init__()
         self.BN_c = nn.BatchNorm2d(num_features)
         self.BN_a = nn.BatchNorm2d(num_features)
+        self.BN_a2 = nn.BatchNorm2d(num_features)
 
     def forward(self, _input, idx):
         '''
@@ -24,10 +26,15 @@ class DualBN2d(nn.Module):
         Returns:
             _output: Tensor. size=(N,C,H,W)
         '''
+        #pdb.set_trace()
         if idx == 0:
             _output = self.BN_a(_input)
+        elif idx == 1:
+            _output = self.BN_a2(_input)
         elif idx == _input.size()[0]:
             _output = self.BN_c(_input)
+        #elif idx == 1: 
+        #    _output = self.BN_a2(_input)
         else:
             _output_c = self.BN_c(_input[0:idx,...]) # BN cannot take tensor with N=0
             _output_a = self.BN_a(_input[idx:,...])

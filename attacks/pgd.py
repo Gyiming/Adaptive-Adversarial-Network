@@ -51,7 +51,7 @@ class PGD():
         '''
         # 
         model.eval().cuda()
-
+        #pdb.set_trace()
         # initialize x_adv:
         x_adv = x.clone()
         x_adv += (2.0 * torch.rand(x_adv.shape).cuda() - 1.0) * self.eps # random initialize
@@ -73,6 +73,45 @@ class PGD():
             x_adv = linf_clamp(x_adv, _min=x-self.eps, _max=x+self.eps) # clamp to linf ball centered by x
             x_adv = torch.clamp(x_adv, 0, 1) # clamp to RGB range [0,1]
             
+        return x_adv
+
+    def attackos(self, model, x, labels=None, targets=None, _lambda=None, idx2BN=None):
+        '''
+        Args:
+            x: Tensor. Original images. size=(N,C,W,H)
+            model: nn.Module. The model to be attacked.
+            labels: Tensor. ground truth labels for x. size=(N,). Useful only under untargeted attack.
+            targets: Tensor. target attack class for x. size=(N,). Useful only under targeted attack.
+
+        Return:
+            x_adv: Tensor. Adversarial images. size=(N,C,W,H)
+        '''
+        # 
+        model.eval().cuda()
+        #pdb.set_trace()
+        # initialize x_adv:
+        x_adv = x.clone()
+        x_adv += (2.0 * torch.rand(x_adv.shape).cuda() - 1.0) * self.eps # random initialize
+        x_adv = torch.clamp(x_adv, 0, 1) # clamp to RGB range [0,1]
+        x_adv = Variable(x_adv.cuda(), requires_grad=True)
+
+        for t in range(self.steps):
+            if self.use_FiLM:
+                #pdb.set_trace()
+                logits_adv,_ = model(x_adv, _lambda=_lambda, idx2BN=idx2BN)
+            else:
+                logits_adv,_ = model(x_adv)
+                #pdb.set_trace()
+            if self.targeted:
+                loss_adv = - self.loss_fn(logits_adv, targets)
+            else: # untargeted attack
+                loss_adv = self.loss_fn(logits_adv, labels)
+            grad_adv = torch.autograd.grad(loss_adv, x_adv, only_inputs=True)[0]
+            x_adv.data.add_(self.alpha * torch.sign(grad_adv.data)) # gradient assend by Sign-SGD
+            x_adv = linf_clamp(x_adv, _min=x-self.eps, _max=x+self.eps) # clamp to linf ball centered by x
+            x_adv = torch.clamp(x_adv, 0, 1) # clamp to RGB range [0,1]
+        
+        #pdb.set_trace()
         return x_adv
 
 

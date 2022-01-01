@@ -11,7 +11,7 @@ import torch
 import torch.nn.functional as F
 from torch.optim import SGD, Adam, lr_scheduler
 
-from models.cifar10.resnet import ResNet34
+from models.cifar10.resnet_drop import ResNet34
 from models.svhn.wide_resnet import WRN16_8
 from models.stl10.wide_resnet import WRN40_2
 from models.cifar10.RNet import ResNet50
@@ -40,7 +40,7 @@ parser.add_argument('--momentum', default=0.9, type=float, help='momentum')
 parser.add_argument('--wd', default=5e-4, type=float, help='weight decay')
 # adv parameters:
 parser.add_argument('--targeted', action='store_true', help='If true, targeted attack')
-parser.add_argument('--eps', type=int, default=12)
+parser.add_argument('--eps', type=int, default=8)
 parser.add_argument('--steps', type=int, default=7)
 # loss parameters:
 parser.add_argument('--Lambda', default=0.5, type=float, help='adv loss tradeoff parameter')
@@ -62,9 +62,9 @@ elif args.dataset == 'stl10':
 
 # model:
 if args.dataset == 'cifar10':
-    model_fn = ResNet34
+    #model_fn = ResNet34
     #model_fn = ResNet50
-    #model_fn = ResNet18
+    model_fn = ResNet34
 elif args.dataset == 'svhn':
     model_fn = WRN16_8
 elif args.dataset == 'stl10':

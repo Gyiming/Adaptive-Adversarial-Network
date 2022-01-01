@@ -11,7 +11,7 @@ import torch
 import torch.nn.functional as F
 from torch.optim import SGD, Adam, lr_scheduler
 
-from models.cifar10.resnet import ResNet34
+from models.cifar10.resnet_osfixed import ResNet34OAT
 from models.svhn.wide_resnet import WRN16_8
 from models.stl10.wide_resnet import WRN40_2
 from models.cifar10.RNet import ResNet50
@@ -25,14 +25,14 @@ from utils.context import ctx_noparamgrad_and_eval
 from attacks.pgd import PGD
 
 parser = argparse.ArgumentParser(description='CIFAR10 Training against DDN Attack')
-parser.add_argument('--gpu', default='1')
+parser.add_argument('--gpu', default='0')
 parser.add_argument('--cpus', default=4)
 # dataset:
 parser.add_argument('--dataset', '--ds', default='cifar10', choices=['cifar10', 'svhn', 'stl10'], help='which dataset to use')
 # optimization parameters:
 parser.add_argument('--batch_size', '-b', default=128, type=int, help='mini-batch size')
-parser.add_argument('--epochs', '-e', default=210, type=int, help='number of total epochs to run')
-parser.add_argument('--decay_epochs', '--de', default=[50,150], nargs='+', type=int, help='milestones for multisteps lr decay')
+parser.add_argument('--epochs', '-e', default=330, type=int, help='number of total epochs to run')
+parser.add_argument('--decay_epochs', '--de', default=[50,200], nargs='+', type=int, help='milestones for multisteps lr decay')
 parser.add_argument('--opt', default='sgd', choices=['sgd', 'adam'], help='which optimizer to use')
 parser.add_argument('--decay', default='cos', choices=['cos', 'multisteps'], help='which lr decay method to use')
 parser.add_argument('--lr', default=0.1, type=float, help='initial learning rate')
@@ -62,14 +62,14 @@ elif args.dataset == 'stl10':
 
 # model:
 if args.dataset == 'cifar10':
-    model_fn = ResNet34
+    model_fn = ResNet34OAT
     #model_fn = ResNet50
     #model_fn = ResNet18
 elif args.dataset == 'svhn':
     model_fn = WRN16_8
 elif args.dataset == 'stl10':
     model_fn = WRN40_2
-model = model_fn(num_classes = 100).cuda()
+model = model_fn(num_classes = 10).cuda()
 model = torch.nn.DataParallel(model)
 
 # mkdirs:
@@ -84,7 +84,7 @@ elif args.decay == 'multisteps':
     decay_str = 'multisteps-%s' % args.decay_epochs
 attack_str = 'targeted' if args.targeted else 'untargeted' + '-pgd-%d-%d' % (args.eps, args.steps)
 loss_str = 'lambda%s' % (args.Lambda)
-save_folder = os.path.join('./PGDAT', args.dataset, model_str, '%s_%s_%s_%s' % (attack_str, opt_str, decay_str, loss_str))
+save_folder = os.path.join('./FixedOs', args.dataset, model_str, '%s_%s_%s_%s' % (attack_str, opt_str, decay_str, loss_str))
 print(save_folder)
 create_dir(save_folder)
 
@@ -100,7 +100,6 @@ elif args.decay == 'multisteps':
 
 # attacker:
 attacker = PGD(eps=args.eps/255, steps=args.steps)
-attacker2 = PGD(eps=(args.eps+6)/255, steps=args.steps)
 
 # load ckpt:
 if args.resume:
@@ -113,32 +112,24 @@ else:
     # training curve lists:
     training_loss, val_TA, val_ATA , val_ATA2 = [], [], [], []
 
-## training:
-for epoch in range(start_epoch, args.epochs):
+for epoch in range(start_epoch, 50):
     fp = open(os.path.join(save_folder, 'val_log.txt'), 'a+')
     start_time = time.time()
+
+    for child in model.children():
+        pdb.set_trace()
+        fuck = 0
     ## training:
     model.train()
     requires_grad_(model, True)
-    accs, accs_adv1, accs_adv2, losses = AverageMeter(), AverageMeter(), AverageMeter(), AverageMeter()
+    accs, accs_adv1, accs_adv2, losses, losses_advdetect, losses_classfinal = AverageMeter(), AverageMeter(), AverageMeter(), AverageMeter(), AverageMeter(), AverageMeter()
+    accs_detect_normal, accs_detect_adv = AverageMeter(), AverageMeter()
     for i, (imgs, labels) in enumerate(train_loader):
+        pdb.set_trace()
         imgs, labels = imgs.cuda(), labels.cuda()
-
-        # generate adversarial images:
-        if args.Lambda != 0:
-            with ctx_noparamgrad_and_eval(model):
-                imgs_adv1 = attacker.attack(model, imgs, labels)
-                #imgs_adv2 = attacker2.attack(model, imgs, labels)
-            logits_adv1 = model(imgs_adv1.detach())
-            #logits_adv2 = model(imgs_adv2.detach())
-        # logits for clean imgs:
-        logits = model(imgs)
-
-        # loss and update:
+        logits, dn_ = model(imgs, idx2BN = 0, fixed = False)
         loss = F.cross_entropy(logits, labels)
-        if args.Lambda != 0:
-            loss = loss + F.cross_entropy(logits_adv1, labels) 
-            #+ F.cross_entropy(logits_adv2, labels)
+
         optimizer.zero_grad()
         loss.backward()
         optimizer.step()
@@ -148,20 +139,13 @@ for epoch in range(start_epoch, args.epochs):
 
         # metrics:
         accs.append((logits.argmax(1) == labels).float().mean().item())
-        if args.Lambda != 0:
-            accs_adv1.append((logits_adv1.argmax(1) == labels).float().mean().item())
-            #accs_adv2.append((logits_adv2.argmax(1) == labels).float().mean().item())
         losses.append(loss.item())
 
         if i % 50 == 0:
             train_str = 'Epoch %d-%d | Train | Loss: %.4f, SA: %.4f' % (epoch, i, losses.avg, accs.avg)
-            if args.Lambda != 0:
-                train_str += ', RA1: %.4f' % (accs_adv1.avg)
-                #train_str += ', RA2: %.4f' % (accs_adv2.avg)
             print(train_str)
     # lr schedualr update at the end of each epoch:
     scheduler.step()
-
 
     ## validation:
     model.eval()
@@ -177,64 +161,12 @@ for epoch in range(start_epoch, args.epochs):
         val_accs, val_accs_adv, val_accs_adv2 = AverageMeter(), AverageMeter(), AverageMeter()
         for i, (imgs, labels) in enumerate(val_loader):
             imgs, labels = imgs.cuda(), labels.cuda()
-
-            # generate adversarial images:
-            with ctx_noparamgrad_and_eval(model):
-                imgs_adv = attacker.attack(model, imgs, labels)
-                #imgs_adv2 = attacker2.attack(model, imgs, labels)
-            linf_norms = (imgs_adv - imgs).view(imgs.size()[0], -1).norm(p=np.Inf, dim=1)
-            logits_adv1 = model(imgs_adv.detach())
-            #logits_adv2 = model(imgs_adv2.detach())
             # logits for clean imgs:
-            logits = model(imgs)
+            logits,dn_ = model(imgs,idx2BN = 0, fixed = False)
             #pdb.set_trace()
             val_accs.append((logits.argmax(1) == labels).float().mean().item())
-            val_accs_adv.append((logits_adv1.argmax(1) == labels).float().mean().item())
-            #val_accs_adv2.append((logits_adv2.argmax(1) == labels).float().mean().item())
 
-        val_str = 'Epoch %d | Validation | Time: %.4f | lr: %s | SA: %.4f, RA1: %.4f, linf: %.4f - %.4f' % (
-            epoch, (time.time()-start_time), current_lr, val_accs.avg, val_accs_adv.avg,
-            torch.min(linf_norms).data, torch.max(linf_norms).data)
+            val_str = 'Epoch %d | Validation | Time: %.4f | lr: %s | SA: %.4f' % (
+            epoch, (time.time()-start_time), current_lr, val_accs.avg)
         print(val_str)
         fp.write(val_str + '\n')
-
-    # save loss curve:
-    training_loss.append(losses.avg)
-    plt.plot(training_loss)
-    plt.grid(True)
-    plt.savefig(os.path.join(save_folder, 'training_loss.png'))
-    plt.close()
-
-    if eval_this_epoch:
-        val_TA.append(val_accs.avg) 
-        plt.plot(val_TA, 'r')
-        val_ATA.append(val_accs_adv.avg)
-        plt.plot(val_ATA, 'g')
-        #val_ATA2.append(val_accs_adv2.avg)
-        #plt.plot(val_ATA2, 'b')
-        plt.grid(True)
-        plt.savefig(os.path.join(save_folder, 'val_acc.png'))
-        plt.close()
-    else:
-        val_TA.append(val_TA[-1]) 
-        plt.plot(val_TA, 'r')
-        val_ATA.append(val_ATA[-1])
-        plt.plot(val_ATA, 'g')
-        #val_ATA2.append(val_ATA2[-1])
-        #plt.plot(val_ATA2, 'b')
-        plt.grid(True)
-        plt.savefig(os.path.join(save_folder, 'val_acc.png'))
-        plt.close()
-
-    # save pth:
-    if eval_this_epoch:
-        if val_accs.avg >= best_TA:
-            best_TA = val_accs.avg
-            torch.save(model.state_dict(), os.path.join(save_folder, 'best_SA.pth'))
-        if val_accs_adv.avg >= best_ATA:
-            best_ATA = val_accs_adv.avg
-            torch.save(model.state_dict(), os.path.join(save_folder, 'best_RA.pth'))
-    save_ckpt(epoch, model, optimizer, scheduler, best_TA, best_ATA, training_loss, val_TA, val_ATA, 
-        os.path.join(save_folder, 'latest.pth'))
-
-

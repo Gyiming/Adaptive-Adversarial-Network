@@ -7,7 +7,6 @@ https://github.com/TAMU-VITA/ATMC/blob/master/cifar/resnet/resnet.py
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-import pdb
 
 class BasicBlock(nn.Module):
 
@@ -19,6 +18,7 @@ class BasicBlock(nn.Module):
         self.bn2 = nn.BatchNorm2d(out_planes)
 
         self.shortcut = nn.Sequential()
+        self.drop_rate = 0.2
         if stride != 1 or in_planes != out_planes:
             self.shortcut = nn.Sequential(
                 nn.Conv2d(in_planes, out_planes, kernel_size=1, stride=stride, bias=False),
@@ -28,6 +28,7 @@ class BasicBlock(nn.Module):
     def forward(self, x):
         out = self.bn1(self.conv1(x))
         out = F.relu(out)
+        out = F.dropout(out, p=self.drop_rate, training=self.training)
         out = self.bn2(self.conv2(out))
         out += self.shortcut(x)
         out = F.relu(out)
@@ -58,7 +59,6 @@ class ResNet(nn.Module):
 
     def forward(self, x):
         out = F.relu(self.bn1(self.conv1(x)))
-        #pdb.set_trace()
         out = self.layer1(out)
         out = self.layer2(out)
         out = self.layer3(out)
@@ -99,7 +99,6 @@ class ResNetsize(nn.Module):
 
     def forward(self, x):
         out = F.relu(self.bn1(self.conv1(x)))
-        pdb.set_trace()
         out = self.layer1(out)
         out = self.layer2(out)
         out = self.layer3(out)
@@ -113,7 +112,7 @@ def Rsize(num_classes):
 
 if __name__ == '__main__':
     from thop import profile
-    net = Rsize(num_classes=10)
+    net = Rsize(num_classes=100)
     x = torch.randn(1,3,32,32)
     flops, params = profile(net, inputs=(x, ))
     y = net(x)

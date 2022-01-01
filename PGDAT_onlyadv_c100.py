@@ -16,7 +16,7 @@ from models.svhn.wide_resnet import WRN16_8
 from models.stl10.wide_resnet import WRN40_2
 from models.cifar10.RNet import ResNet50
 
-from dataloaders.cifar10 import cifar10_dataloaders
+from dataloaders.cifar100 import cifar100_dataloaders
 from dataloaders.svhn import svhn_dataloaders
 from dataloaders.stl10 import stl10_dataloaders
 
@@ -28,7 +28,7 @@ parser = argparse.ArgumentParser(description='CIFAR10 Training against DDN Attac
 parser.add_argument('--gpu', default='1')
 parser.add_argument('--cpus', default=4)
 # dataset:
-parser.add_argument('--dataset', '--ds', default='cifar10', choices=['cifar10', 'svhn', 'stl10'], help='which dataset to use')
+parser.add_argument('--dataset', '--ds', default='cifar100', choices=['cifar100', 'svhn', 'stl10'], help='which dataset to use')
 # optimization parameters:
 parser.add_argument('--batch_size', '-b', default=128, type=int, help='mini-batch size')
 parser.add_argument('--epochs', '-e', default=210, type=int, help='number of total epochs to run')
@@ -40,7 +40,7 @@ parser.add_argument('--momentum', default=0.9, type=float, help='momentum')
 parser.add_argument('--wd', default=5e-4, type=float, help='weight decay')
 # adv parameters:
 parser.add_argument('--targeted', action='store_true', help='If true, targeted attack')
-parser.add_argument('--eps', type=int, default=12)
+parser.add_argument('--eps', type=int, default=15)
 parser.add_argument('--steps', type=int, default=7)
 # loss parameters:
 parser.add_argument('--Lambda', default=0.5, type=float, help='adv loss tradeoff parameter')
@@ -53,15 +53,15 @@ os.environ['CUDA_VISIBLE_DEVICES'] = args.gpu
 torch.backends.cudnn.benchmark = True
 
 # data loader:
-if args.dataset == 'cifar10':
-    train_loader, val_loader, _ = cifar10_dataloaders(train_batch_size=args.batch_size, num_workers=args.cpus)
+if args.dataset == 'cifar100':
+    train_loader, val_loader, _ = cifar100_dataloaders(train_batch_size=args.batch_size, num_workers=args.cpus)
 elif args.dataset == 'svhn':
     train_loader, val_loader, _ = svhn_dataloaders(train_batch_size=args.batch_size, num_workers=args.cpus)
 elif args.dataset == 'stl10':
     train_loader, val_loader = stl10_dataloaders(train_batch_size=args.batch_size, num_workers=args.cpus)
 
 # model:
-if args.dataset == 'cifar10':
+if args.dataset == 'cifar100':
     model_fn = ResNet34
     #model_fn = ResNet50
     #model_fn = ResNet18
@@ -135,10 +135,11 @@ for epoch in range(start_epoch, args.epochs):
         logits = model(imgs)
 
         # loss and update:
-        loss = F.cross_entropy(logits, labels)
+        #loss = F.cross_entropy(logits, labels)
         if args.Lambda != 0:
-            loss = loss + F.cross_entropy(logits_adv1, labels) 
+            #loss = loss + F.cross_entropy(logits_adv1, labels) 
             #+ F.cross_entropy(logits_adv2, labels)
+            loss = F.cross_entropy(logits_adv1, labels)
         optimizer.zero_grad()
         loss.backward()
         optimizer.step()
@@ -168,7 +169,7 @@ for epoch in range(start_epoch, args.epochs):
     requires_grad_(model, False)
     print(model.training)
 
-    if args.dataset == 'cifar10':
+    if args.dataset == 'cifar100':
         eval_this_epoch = (epoch % 10 == 0) or (epoch>=int(0.7*args.epochs)) # boolean
     elif args.dataset == 'svhn':
         eval_this_epoch = (epoch % 10 == 0) or (epoch>=int(0.25*args.epochs)) # boolean

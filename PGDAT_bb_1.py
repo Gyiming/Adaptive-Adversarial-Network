@@ -14,7 +14,6 @@ from torch.optim import SGD, Adam, lr_scheduler
 from models.cifar10.resnet import ResNet34
 from models.svhn.wide_resnet import WRN16_8
 from models.stl10.wide_resnet import WRN40_2
-from models.cifar10.RNet import ResNet50
 
 from dataloaders.cifar10 import cifar10_dataloaders
 from dataloaders.svhn import svhn_dataloaders
@@ -24,6 +23,43 @@ from utils.utils import *
 from utils.context import ctx_noparamgrad_and_eval
 from attacks.pgd import PGD
 
+from skimage import io
+from torchvision import transforms
+from torch.utils.data import Dataset, DataLoader
+from torchvision import transforms, utils
+
+import pdb
+import os
+import PIL
+from PIL import Image
+import gzip
+import pickle
+
+def imgloader(path):
+    #a = np.array([])
+    with gzip.open(path,"rb") as file:
+        img_pil = pickle.load(file)
+
+    return torch.from_numpy(img_pil)
+
+class traindataset(Dataset):
+    def __init__(self, file_normal,target,adv_label,imgloader,adv_label_gt):
+        self.image_normal = file_normal
+        self.target = target
+        self.adv_label = adv_label
+        self.imgloader = imgloader
+        self.adv_label_gt = adv_label_gt
+
+    def __getitem__(self,index):
+        img_normal = self.imgloader(self.image_normal[index])
+        target = self.target[index]
+        adv_label = self.adv_label[index]
+        adv_label_gt = self.adv_label_gt[index]
+        return img_normal, target, adv_label, adv_label_gt
+
+    def __len__(self):
+        return len(self.image_normal)
+
 parser = argparse.ArgumentParser(description='CIFAR10 Training against DDN Attack')
 parser.add_argument('--gpu', default='1')
 parser.add_argument('--cpus', default=4)
@@ -31,7 +67,7 @@ parser.add_argument('--cpus', default=4)
 parser.add_argument('--dataset', '--ds', default='cifar10', choices=['cifar10', 'svhn', 'stl10'], help='which dataset to use')
 # optimization parameters:
 parser.add_argument('--batch_size', '-b', default=128, type=int, help='mini-batch size')
-parser.add_argument('--epochs', '-e', default=210, type=int, help='number of total epochs to run')
+parser.add_argument('--epochs', '-e', default=200, type=int, help='number of total epochs to run')
 parser.add_argument('--decay_epochs', '--de', default=[50,150], nargs='+', type=int, help='milestones for multisteps lr decay')
 parser.add_argument('--opt', default='sgd', choices=['sgd', 'adam'], help='which optimizer to use')
 parser.add_argument('--decay', default='cos', choices=['cos', 'multisteps'], help='which lr decay method to use')
@@ -40,7 +76,7 @@ parser.add_argument('--momentum', default=0.9, type=float, help='momentum')
 parser.add_argument('--wd', default=5e-4, type=float, help='weight decay')
 # adv parameters:
 parser.add_argument('--targeted', action='store_true', help='If true, targeted attack')
-parser.add_argument('--eps', type=int, default=12)
+parser.add_argument('--eps', type=int, default=8)
 parser.add_argument('--steps', type=int, default=7)
 # loss parameters:
 parser.add_argument('--Lambda', default=0.5, type=float, help='adv loss tradeoff parameter')
@@ -63,13 +99,11 @@ elif args.dataset == 'stl10':
 # model:
 if args.dataset == 'cifar10':
     model_fn = ResNet34
-    #model_fn = ResNet50
-    #model_fn = ResNet18
 elif args.dataset == 'svhn':
     model_fn = WRN16_8
 elif args.dataset == 'stl10':
     model_fn = WRN40_2
-model = model_fn(num_classes = 100).cuda()
+model = model_fn().cuda()
 model = torch.nn.DataParallel(model)
 
 # mkdirs:
@@ -100,8 +134,17 @@ elif args.decay == 'multisteps':
 
 # attacker:
 attacker = PGD(eps=args.eps/255, steps=args.steps)
-attacker2 = PGD(eps=(args.eps+6)/255, steps=args.steps)
+attacker2 = PGD(eps=(args.eps-4)/255, steps=args.steps)
 
+file_valid = []
+base_path = './testimg/testtpgd/'
+for j in range(10000):
+    file_valid.append(base_path + str(j) + '.pkl')
+label_valid = np.load('./testimg/vali_labels_2.npy')
+label_adv = np.load('./testimg/adv_labels_2.npy')
+label_adv_gt = np.load('./testimg/adv_labels_r_1_gt.npy')
+validdata = traindataset(file_normal = file_valid, target = label_valid ,adv_label = label_adv,imgloader=imgloader,adv_label_gt=label_adv_gt)
+valiloader = DataLoader(validdata, batch_size = args.batch_size, shuffle = True)
 # load ckpt:
 if args.resume:
     last_epoch, best_TA, best_ATA, training_loss, val_TA, val_ATA \
@@ -115,30 +158,27 @@ else:
 
 ## training:
 for epoch in range(start_epoch, args.epochs):
-    fp = open(os.path.join(save_folder, 'val_log.txt'), 'a+')
+    val_fp = open(os.path.join(save_folder, 'val_log.txt'), 'a+')
     start_time = time.time()
     ## training:
     model.train()
     requires_grad_(model, True)
-    accs, accs_adv1, accs_adv2, losses = AverageMeter(), AverageMeter(), AverageMeter(), AverageMeter()
+    accs, accs_adv, losses = AverageMeter(), AverageMeter(), AverageMeter()
     for i, (imgs, labels) in enumerate(train_loader):
         imgs, labels = imgs.cuda(), labels.cuda()
 
         # generate adversarial images:
         if args.Lambda != 0:
             with ctx_noparamgrad_and_eval(model):
-                imgs_adv1 = attacker.attack(model, imgs, labels)
-                #imgs_adv2 = attacker2.attack(model, imgs, labels)
-            logits_adv1 = model(imgs_adv1.detach())
-            #logits_adv2 = model(imgs_adv2.detach())
+                imgs_adv = attacker.attack(model, imgs, labels)
+            logits_adv = model(imgs_adv.detach())
         # logits for clean imgs:
         logits = model(imgs)
 
         # loss and update:
         loss = F.cross_entropy(logits, labels)
         if args.Lambda != 0:
-            loss = loss + F.cross_entropy(logits_adv1, labels) 
-            #+ F.cross_entropy(logits_adv2, labels)
+            loss = loss +  F.cross_entropy(logits_adv, labels) * 1.8
         optimizer.zero_grad()
         loss.backward()
         optimizer.step()
@@ -149,15 +189,13 @@ for epoch in range(start_epoch, args.epochs):
         # metrics:
         accs.append((logits.argmax(1) == labels).float().mean().item())
         if args.Lambda != 0:
-            accs_adv1.append((logits_adv1.argmax(1) == labels).float().mean().item())
-            #accs_adv2.append((logits_adv2.argmax(1) == labels).float().mean().item())
+            accs_adv.append((logits_adv.argmax(1) == labels).float().mean().item())
         losses.append(loss.item())
 
         if i % 50 == 0:
             train_str = 'Epoch %d-%d | Train | Loss: %.4f, SA: %.4f' % (epoch, i, losses.avg, accs.avg)
             if args.Lambda != 0:
-                train_str += ', RA1: %.4f' % (accs_adv1.avg)
-                #train_str += ', RA2: %.4f' % (accs_adv2.avg)
+                train_str += ', RA: %.4f' % (accs_adv.avg)
             print(train_str)
     # lr schedualr update at the end of each epoch:
     scheduler.step()
@@ -192,11 +230,60 @@ for epoch in range(start_epoch, args.epochs):
             val_accs_adv.append((logits_adv1.argmax(1) == labels).float().mean().item())
             #val_accs_adv2.append((logits_adv2.argmax(1) == labels).float().mean().item())
 
-        val_str = 'Epoch %d | Validation | Time: %.4f | lr: %s | SA: %.4f, RA1: %.4f, linf: %.4f - %.4f' % (
-            epoch, (time.time()-start_time), current_lr, val_accs.avg, val_accs_adv.avg,
-            torch.min(linf_norms).data, torch.max(linf_norms).data)
+        for i, (imgs, labels, adv_labels,adv_labels_gt) in enumerate(valiloader):
+            imgs, labels = imgs.cuda(), labels.cuda()
+            
+            index_normal = []
+            index_adv1 = []
+            for t in range(len(adv_labels)):
+                if adv_labels[t] == 0:
+                    index_normal.append(t)
+                elif adv_labels[t] == 1:
+                    index_adv1.append(t)
+            #pdb.set_trace()
+            imgs_normal = imgs[index_normal]
+            labels_normal = labels[index_normal]
+            imgs_adv1 = imgs[index_adv1]
+            labels_adv1 = labels[index_adv1]
+            # logits for adv imgs:
+            if len(index_adv1) == 0 or len(index_normal) == 0:
+                #only use one branch
+                if len(index_adv1) == 0:
+                    #only use normal branch
+                    logits_all = model(imgs_normal)
+                    normal_gt = []
+                    adv_gt = []
+                    for t in range(len(adv_labels_gt)):
+                        if adv_labels_gt[t] == 0:
+                            normal_gt.append(t)
+                        else:
+                            adv_gt.append(t)
+                    #pdb.set_trace()
+                    val_accs_adv2.append((logits_all[adv_gt].argmax(1) == labels[adv_gt]).float().mean().item())
+                    #val_accs.append((logits_all[normal_gt].argmax(1) == labels[normal_gt]).float().mean().item())
+                else:
+                    #only use adv branch
+                    logits_all = model(imgs_adv1.detach())
+                    normal_gt = []
+                    adv_gt = []
+                    for t in range(len(adv_labels_gt)):
+                        if adv_labels_gt[t] == 0:
+                            normal_gt.append(t)
+                        else:
+                            adv_gt.append(t)
+                    val_accs_adv2.append((logits_all[adv_gt].argmax(1) == labels[adv_gt]).float().mean().item())
+                    #val_accs.append((logits_all[normal_gt].argmax(1) == labels[normal_gt]).float().mean().item())
+            else:
+                logits_adv1 = model(imgs_adv1.detach())
+                val_accs_adv2.append((logits_adv1.argmax(1) == labels_adv1).float().mean().item())
+                #logits = model(imgs_normal)
+                #val_accs.append((logits.argmax(1) == labels_normal).float().mean().item())
+
+        val_str = 'Epoch %d | Validation | Time: %.4f | lr: %s | SA: %.4f, RA1: %.4f, RAsimba: %.4f' % (
+            epoch, (time.time()-start_time), current_lr, val_accs.avg, val_accs_adv.avg, val_accs_adv2.avg)
         print(val_str)
-        fp.write(val_str + '\n')
+        val_fp.write(val_str + '\n')
+
 
     # save loss curve:
     training_loss.append(losses.avg)
@@ -210,8 +297,8 @@ for epoch in range(start_epoch, args.epochs):
         plt.plot(val_TA, 'r')
         val_ATA.append(val_accs_adv.avg)
         plt.plot(val_ATA, 'g')
-        #val_ATA2.append(val_accs_adv2.avg)
-        #plt.plot(val_ATA2, 'b')
+        val_ATA2.append(val_accs_adv2.avg)
+        plt.plot(val_ATA2, 'b')
         plt.grid(True)
         plt.savefig(os.path.join(save_folder, 'val_acc.png'))
         plt.close()
@@ -220,8 +307,8 @@ for epoch in range(start_epoch, args.epochs):
         plt.plot(val_TA, 'r')
         val_ATA.append(val_ATA[-1])
         plt.plot(val_ATA, 'g')
-        #val_ATA2.append(val_ATA2[-1])
-        #plt.plot(val_ATA2, 'b')
+        val_ATA2.append(val_ATA2[-1])
+        plt.plot(val_ATA2, 'b')
         plt.grid(True)
         plt.savefig(os.path.join(save_folder, 'val_acc.png'))
         plt.close()

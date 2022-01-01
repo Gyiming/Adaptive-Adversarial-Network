@@ -25,7 +25,7 @@ from utils.context import ctx_noparamgrad_and_eval
 from attacks.pgd import PGD
 
 parser = argparse.ArgumentParser(description='CIFAR10 Training against DDN Attack')
-parser.add_argument('--gpu', default='1')
+parser.add_argument('--gpu', default='0')
 parser.add_argument('--cpus', default=4)
 # dataset:
 parser.add_argument('--dataset', '--ds', default='cifar10', choices=['cifar10', 'svhn', 'stl10'], help='which dataset to use')
@@ -84,7 +84,7 @@ elif args.decay == 'multisteps':
     decay_str = 'multisteps-%s' % args.decay_epochs
 attack_str = 'targeted' if args.targeted else 'untargeted' + '-pgd-%d-%d' % (args.eps, args.steps)
 loss_str = 'lambda%s' % (args.Lambda)
-save_folder = os.path.join('./PGDAT', args.dataset, model_str, '%s_%s_%s_%s' % (attack_str, opt_str, decay_str, loss_str))
+save_folder = os.path.join('./PGDATonly', args.dataset, model_str, '%s_%s_%s_%s' % (attack_str, opt_str, decay_str, loss_str))
 print(save_folder)
 create_dir(save_folder)
 
@@ -135,10 +135,11 @@ for epoch in range(start_epoch, args.epochs):
         logits = model(imgs)
 
         # loss and update:
-        loss = F.cross_entropy(logits, labels)
+        #loss = F.cross_entropy(logits, labels)
         if args.Lambda != 0:
-            loss = loss + F.cross_entropy(logits_adv1, labels) 
+            #loss = loss + F.cross_entropy(logits_adv1, labels) 
             #+ F.cross_entropy(logits_adv2, labels)
+            loss = F.cross_entropy(logits_adv1, labels)
         optimizer.zero_grad()
         loss.backward()
         optimizer.step()

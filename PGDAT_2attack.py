@@ -25,7 +25,7 @@ from utils.context import ctx_noparamgrad_and_eval
 from attacks.pgd import PGD
 
 parser = argparse.ArgumentParser(description='CIFAR10 Training against DDN Attack')
-parser.add_argument('--gpu', default='1')
+parser.add_argument('--gpu', default='0')
 parser.add_argument('--cpus', default=4)
 # dataset:
 parser.add_argument('--dataset', '--ds', default='cifar10', choices=['cifar10', 'svhn', 'stl10'], help='which dataset to use')
@@ -40,7 +40,7 @@ parser.add_argument('--momentum', default=0.9, type=float, help='momentum')
 parser.add_argument('--wd', default=5e-4, type=float, help='weight decay')
 # adv parameters:
 parser.add_argument('--targeted', action='store_true', help='If true, targeted attack')
-parser.add_argument('--eps', type=int, default=12)
+parser.add_argument('--eps', type=int, default=6)
 parser.add_argument('--steps', type=int, default=7)
 # loss parameters:
 parser.add_argument('--Lambda', default=0.5, type=float, help='adv loss tradeoff parameter')
@@ -84,7 +84,7 @@ elif args.decay == 'multisteps':
     decay_str = 'multisteps-%s' % args.decay_epochs
 attack_str = 'targeted' if args.targeted else 'untargeted' + '-pgd-%d-%d' % (args.eps, args.steps)
 loss_str = 'lambda%s' % (args.Lambda)
-save_folder = os.path.join('./PGDAT', args.dataset, model_str, '%s_%s_%s_%s' % (attack_str, opt_str, decay_str, loss_str))
+save_folder = os.path.join('./PGDAT2attack', args.dataset, model_str, '%s_%s_%s_%s' % (attack_str, opt_str, decay_str, loss_str))
 print(save_folder)
 create_dir(save_folder)
 
@@ -100,7 +100,7 @@ elif args.decay == 'multisteps':
 
 # attacker:
 attacker = PGD(eps=args.eps/255, steps=args.steps)
-attacker2 = PGD(eps=(args.eps+6)/255, steps=args.steps)
+attacker2 = PGD(eps=(args.eps+12)/255, steps=args.steps)
 
 # load ckpt:
 if args.resume:
@@ -128,16 +128,16 @@ for epoch in range(start_epoch, args.epochs):
         if args.Lambda != 0:
             with ctx_noparamgrad_and_eval(model):
                 imgs_adv1 = attacker.attack(model, imgs, labels)
-                #imgs_adv2 = attacker2.attack(model, imgs, labels)
+                imgs_adv2 = attacker2.attack(model, imgs, labels)
             logits_adv1 = model(imgs_adv1.detach())
-            #logits_adv2 = model(imgs_adv2.detach())
+            logits_adv2 = model(imgs_adv2.detach())
         # logits for clean imgs:
         logits = model(imgs)
 
         # loss and update:
         loss = F.cross_entropy(logits, labels)
         if args.Lambda != 0:
-            loss = loss + F.cross_entropy(logits_adv1, labels) 
+            loss = loss + F.cross_entropy(logits_adv1, labels) + F.cross_entropy(logits_adv1, labels)
             #+ F.cross_entropy(logits_adv2, labels)
         optimizer.zero_grad()
         loss.backward()
@@ -150,14 +150,14 @@ for epoch in range(start_epoch, args.epochs):
         accs.append((logits.argmax(1) == labels).float().mean().item())
         if args.Lambda != 0:
             accs_adv1.append((logits_adv1.argmax(1) == labels).float().mean().item())
-            #accs_adv2.append((logits_adv2.argmax(1) == labels).float().mean().item())
+            accs_adv2.append((logits_adv2.argmax(1) == labels).float().mean().item())
         losses.append(loss.item())
 
         if i % 50 == 0:
             train_str = 'Epoch %d-%d | Train | Loss: %.4f, SA: %.4f' % (epoch, i, losses.avg, accs.avg)
             if args.Lambda != 0:
                 train_str += ', RA1: %.4f' % (accs_adv1.avg)
-                #train_str += ', RA2: %.4f' % (accs_adv2.avg)
+                train_str += ', RA2: %.4f' % (accs_adv2.avg)
             print(train_str)
     # lr schedualr update at the end of each epoch:
     scheduler.step()
@@ -181,16 +181,16 @@ for epoch in range(start_epoch, args.epochs):
             # generate adversarial images:
             with ctx_noparamgrad_and_eval(model):
                 imgs_adv = attacker.attack(model, imgs, labels)
-                #imgs_adv2 = attacker2.attack(model, imgs, labels)
+                imgs_adv2 = attacker2.attack(model, imgs, labels)
             linf_norms = (imgs_adv - imgs).view(imgs.size()[0], -1).norm(p=np.Inf, dim=1)
             logits_adv1 = model(imgs_adv.detach())
-            #logits_adv2 = model(imgs_adv2.detach())
+            logits_adv2 = model(imgs_adv2.detach())
             # logits for clean imgs:
             logits = model(imgs)
             #pdb.set_trace()
             val_accs.append((logits.argmax(1) == labels).float().mean().item())
             val_accs_adv.append((logits_adv1.argmax(1) == labels).float().mean().item())
-            #val_accs_adv2.append((logits_adv2.argmax(1) == labels).float().mean().item())
+            val_accs_adv2.append((logits_adv2.argmax(1) == labels).float().mean().item())
 
         val_str = 'Epoch %d | Validation | Time: %.4f | lr: %s | SA: %.4f, RA1: %.4f, linf: %.4f - %.4f' % (
             epoch, (time.time()-start_time), current_lr, val_accs.avg, val_accs_adv.avg,
@@ -210,8 +210,8 @@ for epoch in range(start_epoch, args.epochs):
         plt.plot(val_TA, 'r')
         val_ATA.append(val_accs_adv.avg)
         plt.plot(val_ATA, 'g')
-        #val_ATA2.append(val_accs_adv2.avg)
-        #plt.plot(val_ATA2, 'b')
+        val_ATA2.append(val_accs_adv2.avg)
+        plt.plot(val_ATA2, 'b')
         plt.grid(True)
         plt.savefig(os.path.join(save_folder, 'val_acc.png'))
         plt.close()
@@ -220,8 +220,8 @@ for epoch in range(start_epoch, args.epochs):
         plt.plot(val_TA, 'r')
         val_ATA.append(val_ATA[-1])
         plt.plot(val_ATA, 'g')
-        #val_ATA2.append(val_ATA2[-1])
-        #plt.plot(val_ATA2, 'b')
+        val_ATA2.append(val_ATA2[-1])
+        plt.plot(val_ATA2, 'b')
         plt.grid(True)
         plt.savefig(os.path.join(save_folder, 'val_acc.png'))
         plt.close()

@@ -3,6 +3,7 @@ import torch
 import torch.nn as nn
 import numpy as np
 import matplotlib.pyplot as plt
+import pdb
 
 class AverageMeter:
     """Computes and stores the average and current value"""
@@ -114,6 +115,7 @@ def load_ckpt(model, optimizer, scheduler, path):
         raise Exception('No such file: %s' % path)
     print("===>>> loading checkpoint from %s" % path)
     ckpt = torch.load(path)
+    #pdb.set_trace()
     epoch = ckpt['epoch']
     best_TA = ckpt['best_TA']
     best_ATA = ckpt['best_ATA']
@@ -123,7 +125,7 @@ def load_ckpt(model, optimizer, scheduler, path):
     model.load_state_dict(ckpt['model'])
     optimizer.load_state_dict(ckpt['optimizer'])
     scheduler.load_state_dict(ckpt['scheduler'])
-    return epoch, best_TA, best_ATA, training_loss, val_TA, val_ATA
+    return  epoch, best_TA, best_ATA, training_loss, val_TA, val_ATA
 
 
 def fourD2threeD(batch, n_row=10):

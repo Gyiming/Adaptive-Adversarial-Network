@@ -16,11 +16,13 @@ class FiLM_Layer(nn.Module):
         super(FiLM_Layer, self).__init__()
         self.channels = channels
         self.activation = activation
+        #self.l1 = nn.Linear(1,128,bias=True)
         self.MLP = nn.Sequential(
             nn.Linear(in_channels, alpha*channels*2, bias=True), 
             nn.LeakyReLU(inplace=True),
             nn.Linear(alpha*channels*2, channels*2, bias=True), 
         )
+
         
     def forward(self, _input, _lambda):
         N, C, H, W = _input.size()
